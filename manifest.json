@@ -1,0 +1,9 @@
+{
+  "id": "link-unlinked-mentions",
+  "name": "Link Unlinked Mentions",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Bulk-link all unlinked mentions of the active note (and its aliases) across the vault.",
+  "author": "Jordan Vasu",
+  "isDesktopOnly": false
+}

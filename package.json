@@ -1,0 +1,23 @@
+{
+  "name": "link-unlinked-mentions",
+  "version": "1.0.0",
+  "description": "Obsidian plugin to link unlinked mentions",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "builtin-modules": "^5.2.0",
+    "esbuild": "^0.21.0",
+    "obsidian": "^1.6.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
