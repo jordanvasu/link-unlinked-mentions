@@ -1,34 +1,46 @@
-import { App, Modal, Notice, Plugin, TFile } from "obsidian";
-import { findMatches, applyReplacements, MatchResult } from "./matcher";
+import { App, Modal, Notice, Plugin } from "obsidian";
+import {
+	getAliases,
+	buildTermEntries,
+	findMatches,
+	applyReplacements,
+	MatchResult,
+	TermEntry,
+} from "./matcher";
 
-interface FileMatches {
-	file: TFile;
-	matches: MatchResult[];
-}
-
-function getAliases(raw: unknown): string[] {
-	if (!raw) return [];
-	if (typeof raw === "string") return [raw];
-	if (Array.isArray(raw)) return raw.filter((a): a is string => typeof a === "string");
-	return [];
-}
-
-function buildReport(fileMatches: FileMatches[], canonicalTitle: string): string {
-	const totalMatches = fileMatches.reduce((sum, fm) => sum + fm.matches.length, 0);
+function buildReport(
+	matches: MatchResult[],
+	ambiguous: string[],
+	activeTitle: string
+): string {
 	const lines: string[] = [
-		`## Link Unlinked Mentions: "${canonicalTitle}"`,
+		`## Link Mentions in "${activeTitle}"`,
 		``,
-		`**${totalMatches} match${totalMatches !== 1 ? "es" : ""}** in ${fileMatches.length} file${fileMatches.length !== 1 ? "s" : ""}`,
+		`**${matches.length} match${matches.length !== 1 ? "es" : ""}** found` +
+			(ambiguous.length > 0
+				? ` · **${ambiguous.length} term${ambiguous.length !== 1 ? "s" : ""} skipped** (ambiguous)`
+				: "") +
+			".",
 		``,
 	];
 
-	for (const { file, matches } of fileMatches) {
-		lines.push(`### ${file.path} (${matches.length})`);
-		lines.push(``);
+	if (matches.length > 0) {
+		lines.push(`### Matches`, ``);
 		for (const m of matches) {
 			const before = m.contextBefore.replace(/\n/g, " ");
 			const after = m.contextAfter.replace(/\n/g, " ");
-			lines.push(`- …${before}**${m.matchedText}**${after}…`);
+			lines.push(
+				`- "${m.matchedText}" → [[${m.canonicalTitle}]]  …${before}**${m.matchedText}**${after}…`
+			);
+		}
+		lines.push(``);
+	}
+
+	if (ambiguous.length > 0) {
+		lines.push(`### Skipped — Ambiguous Terms`, ``);
+		lines.push(`These terms match multiple notes and were not linked:`, ``);
+		for (const term of ambiguous) {
+			lines.push(`- "${term}"`);
 		}
 		lines.push(``);
 	}
@@ -38,42 +50,41 @@ function buildReport(fileMatches: FileMatches[], canonicalTitle: string): string
 
 class ConfirmModal extends Modal {
 	private report: string;
-	private totalMatches: number;
+	private matchCount: number;
 	private onConfirm: () => void;
 
-	constructor(app: App, report: string, totalMatches: number, onConfirm: () => void) {
+	constructor(app: App, report: string, matchCount: number, onConfirm: () => void) {
 		super(app);
 		this.report = report;
-		this.totalMatches = totalMatches;
+		this.matchCount = matchCount;
 		this.onConfirm = onConfirm;
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.addClass("link-unlinked-modal");
 
-		const title = contentEl.createEl("h2", { text: "Link Unlinked Mentions" });
-		title.style.marginTop = "0";
+		const heading = contentEl.createEl("h2", { text: "Link Mentions of Other Notes" });
+		heading.style.marginTop = "0";
 
-		const summary = contentEl.createEl("p");
-		summary.setText(
-			`Found ${this.totalMatches} unlinked mention${this.totalMatches !== 1 ? "s" : ""}. ` +
-			`This operation is irreversible without a vault backup. Proceed?`
+		const warning = contentEl.createEl("p");
+		warning.setText(
+			`${this.matchCount} mention${this.matchCount !== 1 ? "s" : ""} will be converted to wikilinks. ` +
+				`This operation is irreversible without a vault backup.`
 		);
 
-		const reportContainer = contentEl.createEl("div");
-		reportContainer.style.maxHeight = "400px";
-		reportContainer.style.overflowY = "auto";
-		reportContainer.style.border = "1px solid var(--background-modifier-border)";
-		reportContainer.style.borderRadius = "4px";
-		reportContainer.style.padding = "8px 12px";
-		reportContainer.style.marginBottom = "16px";
-		reportContainer.style.fontFamily = "var(--font-monospace)";
-		reportContainer.style.fontSize = "0.85em";
-		reportContainer.style.whiteSpace = "pre-wrap";
-		reportContainer.style.wordBreak = "break-word";
-		reportContainer.setText(this.report);
+		const reportEl = contentEl.createEl("div");
+		reportEl.style.maxHeight = "400px";
+		reportEl.style.overflowY = "auto";
+		reportEl.style.border = "1px solid var(--background-modifier-border)";
+		reportEl.style.borderRadius = "4px";
+		reportEl.style.padding = "8px 12px";
+		reportEl.style.marginBottom = "16px";
+		reportEl.style.fontFamily = "var(--font-monospace)";
+		reportEl.style.fontSize = "0.85em";
+		reportEl.style.whiteSpace = "pre-wrap";
+		reportEl.style.wordBreak = "break-word";
+		reportEl.setText(this.report);
 
 		const buttonRow = contentEl.createEl("div");
 		buttonRow.style.display = "flex";
@@ -83,7 +94,9 @@ class ConfirmModal extends Modal {
 		const cancelBtn = buttonRow.createEl("button", { text: "Cancel" });
 		cancelBtn.addEventListener("click", () => this.close());
 
-		const confirmBtn = buttonRow.createEl("button", { text: `Link ${this.totalMatches} mention${this.totalMatches !== 1 ? "s" : ""}` });
+		const confirmBtn = buttonRow.createEl("button", {
+			text: `Link ${this.matchCount} mention${this.matchCount !== 1 ? "s" : ""}`,
+		});
 		confirmBtn.addClass("mod-cta");
 		confirmBtn.addEventListener("click", () => {
 			this.close();
@@ -98,71 +111,74 @@ class ConfirmModal extends Modal {
 
 export default class LinkUnlinkedMentionsPlugin extends Plugin {
 	async onload(): Promise<void> {
-		this.addRibbonIcon("link", "Link all unlinked mentions", () => {
-			this.linkUnlinkedMentions();
+		this.addRibbonIcon("link", "Link mentions of other notes in current note", () => {
+			this.linkMentionsInCurrentNote();
 		});
 
 		this.addCommand({
-			id: "link-all-unlinked-mentions",
-			name: "Link all unlinked mentions for current note",
+			id: "link-mentions-of-other-notes",
+			name: "Link mentions of other notes in current note",
 			callback: () => {
-				this.linkUnlinkedMentions();
+				this.linkMentionsInCurrentNote();
 			},
 		});
 	}
 
-	private async linkUnlinkedMentions(): Promise<void> {
+	private async linkMentionsInCurrentNote(): Promise<void> {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile) {
 			new Notice("No active note.");
 			return;
 		}
 
-		const canonicalTitle = activeFile.basename;
+		// Collect the active note's own names so they're excluded from the term list
+		const activeCache = this.app.metadataCache.getFileCache(activeFile);
+		const activeAliases = getAliases(activeCache?.frontmatter?.["aliases"] as unknown);
+		const excludeTerms = new Set([
+			activeFile.basename.toLowerCase(),
+			...activeAliases.map((a) => a.toLowerCase()),
+		]);
 
-		// Collect search terms
-		const cache = this.app.metadataCache.getFileCache(activeFile);
-		const rawAliases = cache?.frontmatter?.["aliases"] as unknown;
-		const aliases = getAliases(rawAliases);
-		const terms = [canonicalTitle, ...aliases];
+		// Build term sources from every other markdown file in the vault
+		const sources = this.app.vault
+			.getMarkdownFiles()
+			.filter((f) => f.path !== activeFile.path)
+			.map((f) => {
+				const cache = this.app.metadataCache.getFileCache(f);
+				return {
+					basename: f.basename,
+					aliases: getAliases(cache?.frontmatter?.["aliases"] as unknown),
+					path: f.path,
+				};
+			});
 
-		// Scan all other markdown files
-		const allFiles = this.app.vault.getMarkdownFiles();
-		const otherFiles = allFiles.filter((f) => f.path !== activeFile.path);
+		const { terms, ambiguous } = buildTermEntries(sources, excludeTerms);
 
-		const fileMatches: FileMatches[] = [];
+		const content = await this.app.vault.cachedRead(activeFile);
+		const matches = findMatches(content, terms);
 
-		for (const file of otherFiles) {
-			const content = await this.app.vault.cachedRead(file);
-			const matches = findMatches(content, terms);
-			if (matches.length > 0) {
-				fileMatches.push({ file, matches });
-			}
-		}
-
-		const totalMatches = fileMatches.reduce((sum, fm) => sum + fm.matches.length, 0);
-
-		if (totalMatches === 0) {
-			new Notice(`No unlinked mentions of "${canonicalTitle}" found.`);
+		if (matches.length === 0) {
+			const msg =
+				ambiguous.length > 0
+					? `No unlinked mentions found. ${ambiguous.length} term${ambiguous.length !== 1 ? "s" : ""} skipped due to ambiguity.`
+					: "No unlinked mentions found in the current note.";
+			new Notice(msg);
 			return;
 		}
 
-		const report = buildReport(fileMatches, canonicalTitle);
+		const report = buildReport(matches, ambiguous, activeFile.basename);
 
-		new ConfirmModal(this.app, report, totalMatches, async () => {
-			let totalReplaced = 0;
-			let filesModified = 0;
-
-			for (const { file, matches } of fileMatches) {
-				await this.app.vault.process(file, (content) => {
-					return applyReplacements(content, matches, canonicalTitle);
-				});
-				totalReplaced += matches.length;
-				filesModified++;
-			}
-
+		new ConfirmModal(this.app, report, matches.length, async () => {
+			// Re-run matching inside vault.process so the edit is based on the file's
+			// current bytes even if it was modified between the preview and confirm.
+			let actualCount = 0;
+			await this.app.vault.process(activeFile, (fileContent) => {
+				const freshMatches = findMatches(fileContent, terms);
+				actualCount = freshMatches.length;
+				return applyReplacements(fileContent, freshMatches);
+			});
 			new Notice(
-				`Linked ${totalReplaced} mention${totalReplaced !== 1 ? "s" : ""} in ${filesModified} file${filesModified !== 1 ? "s" : ""}.`
+				`Linked ${actualCount} mention${actualCount !== 1 ? "s" : ""} in "${activeFile.basename}".`
 			);
 		});
 	}

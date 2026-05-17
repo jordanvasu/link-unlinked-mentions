@@ -4,65 +4,116 @@ export interface Span {
 	scannable: boolean;
 }
 
+export interface TermEntry {
+	term: string;
+	canonicalTitle: string;
+}
+
+export interface TermSource {
+	basename: string;
+	aliases: string[];
+	path: string;
+}
+
 export interface MatchResult {
 	start: number;
 	end: number;
 	matchedText: string;
-	term: string;
+	canonicalTitle: string;
 	contextBefore: string;
 	contextAfter: string;
 }
 
+export function getAliases(raw: unknown): string[] {
+	if (!raw) return [];
+	if (typeof raw === "string") return [raw];
+	if (Array.isArray(raw)) return raw.filter((a): a is string => typeof a === "string");
+	return [];
+}
+
 /**
- * Splits content into scannable and protected spans.
- * Protected spans cover: fenced code, inline code, math blocks, inline math,
- * YAML frontmatter, existing wikilinks, markdown links, HTML comments, and tags.
+ * Builds the deduplicated term list from vault file metadata.
+ * Terms that appear in multiple files are dropped and reported as ambiguous.
+ * excludeTerms (lowercased) are skipped — used to omit the active note's own names.
  */
-export function splitIntoSpans(content: string): Span[] {
-	const spans: Span[] = [];
-	let pos = 0;
+export function buildTermEntries(
+	sources: TermSource[],
+	excludeTerms: Set<string>
+): { terms: TermEntry[]; ambiguous: string[] } {
+	// key: lowercase(term) → { original term, canonical title, set of file paths }
+	const termMap = new Map<string, { term: string; canonicalTitle: string; paths: Set<string> }>();
 
-	// Collect protected ranges
-	const protected_ranges: Array<{ start: number; end: number }> = [];
+	for (const source of sources) {
+		const seenForFile = new Set<string>();
+		for (const raw of [source.basename, ...source.aliases]) {
+			const term = raw.trim();
+			if (term.length < 2) continue;
+			const key = term.toLowerCase();
+			if (excludeTerms.has(key) || seenForFile.has(key)) continue;
+			seenForFile.add(key);
 
-	// YAML frontmatter: must be at start of file
-	const frontmatterMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
-	if (frontmatterMatch) {
-		protected_ranges.push({ start: 0, end: frontmatterMatch[0].length });
+			const existing = termMap.get(key);
+			if (!existing) {
+				termMap.set(key, { term, canonicalTitle: source.basename, paths: new Set([source.path]) });
+			} else {
+				existing.paths.add(source.path);
+			}
+		}
 	}
 
-	// All other protected zones found by scanning
-	const patterns: Array<{ pattern: RegExp; flags?: string }> = [
-		// Fenced code blocks (``` or ~~~)
-		{ pattern: /```[\s\S]*?```/g },
-		{ pattern: /~~~[\s\S]*?~~~/g },
-		// Inline code
-		{ pattern: /`[^`\n]+`/g },
-		// Math blocks $$...$$
-		{ pattern: /\$\$[\s\S]*?\$\$/g },
-		// Inline math $...$  (single dollar, not $$)
-		{ pattern: /\$[^\$\n]+\$/g },
-		// Existing wikilinks [[...]] including [[A|B]]
-		{ pattern: /\[\[[^\]]*\]\]/g },
-		// Markdown links [text](url)
-		{ pattern: /\[[^\]]*\]\([^)]*\)/g },
-		// HTML comments <!-- ... -->
-		{ pattern: /<!--[\s\S]*?-->/g },
-		// Tags: #word (not part of heading)
-		{ pattern: /#[^\s#\[\](){}<>!@$%^&*+=|\\;:'",.?/`~]+/g },
+	const terms: TermEntry[] = [];
+	const ambiguous: string[] = [];
+
+	for (const entry of termMap.values()) {
+		if (entry.paths.size > 1) {
+			ambiguous.push(entry.term);
+		} else {
+			terms.push({ term: entry.term, canonicalTitle: entry.canonicalTitle });
+		}
+	}
+
+	// Longest first — ensures longer titles win in the regex alternation
+	terms.sort((a, b) => b.term.length - a.term.length);
+	return { terms, ambiguous };
+}
+
+/**
+ * Splits content into scannable and protected spans.
+ * Protected: fenced code, inline code, math blocks, inline math, YAML frontmatter,
+ * existing wikilinks, markdown links, HTML comments, tags.
+ */
+export function splitIntoSpans(content: string): Span[] {
+	const protected_ranges: Array<{ start: number; end: number }> = [];
+
+	// YAML frontmatter must be at the very start of the file
+	const fmMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
+	if (fmMatch) {
+		protected_ranges.push({ start: 0, end: fmMatch[0].length });
+	}
+
+	const patternSources: string[] = [
+		"```[\\s\\S]*?```",          // fenced code (backtick)
+		"~~~[\\s\\S]*?~~~",          // fenced code (tilde)
+		"`[^`\\n]+`",                // inline code
+		"\\$\\$[\\s\\S]*?\\$\\$",   // math block
+		"\\$[^$\\n]+\\$",           // inline math
+		"\\[\\[[^\\]]*\\]\\]",      // wikilinks [[...]] and [[A|B]]
+		"\\[[^\\]]*\\]\\([^)]*\\)", // markdown links [text](url)
+		"<!--[\\s\\S]*?-->",        // HTML comments
+		"#[^\\s#\\[\\](){}<>]+",    // tags (#tag)
 	];
 
-	for (const { pattern } of patterns) {
-		const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+	for (const src of patternSources) {
+		const re = new RegExp(src, "g");
 		let m: RegExpExecArray | null;
 		while ((m = re.exec(content)) !== null) {
 			protected_ranges.push({ start: m.index, end: m.index + m[0].length });
 		}
 	}
 
-	// Sort protected ranges by start, then merge overlapping ones
 	protected_ranges.sort((a, b) => a.start - b.start || b.end - a.end);
 
+	// Merge overlapping protected ranges
 	const merged: Array<{ start: number; end: number }> = [];
 	for (const range of protected_ranges) {
 		if (merged.length === 0) {
@@ -77,18 +128,14 @@ export function splitIntoSpans(content: string): Span[] {
 		}
 	}
 
-	// Build spans from merged protected ranges
-	pos = 0;
+	const spans: Span[] = [];
+	let pos = 0;
 	for (const range of merged) {
-		if (pos < range.start) {
-			spans.push({ start: pos, end: range.start, scannable: true });
-		}
+		if (pos < range.start) spans.push({ start: pos, end: range.start, scannable: true });
 		spans.push({ start: range.start, end: range.end, scannable: false });
 		pos = range.end;
 	}
-	if (pos < content.length) {
-		spans.push({ start: pos, end: content.length, scannable: true });
-	}
+	if (pos < content.length) spans.push({ start: pos, end: content.length, scannable: true });
 
 	return spans;
 }
@@ -97,91 +144,97 @@ function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Finds all matches of any term in the scannable spans of content.
- * Prefers longest match when multiple terms overlap at the same position.
- */
-export function findMatches(content: string, terms: string[]): MatchResult[] {
-	const validTerms = terms
-		.filter((t) => t.trim().length >= 2)
-		.sort((a, b) => b.length - a.length); // longest first
+// For notes larger than this threshold, process spans line-by-line to stay responsive
+const LARGE_SPAN_THRESHOLD = 50_000;
 
-	if (validTerms.length === 0) return [];
+function collectMatches(
+	chunk: string,
+	chunkBaseOffset: number,
+	re: RegExp,
+	lookup: Map<string, string>,
+	fullContent: string,
+	results: MatchResult[]
+): void {
+	re.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(chunk)) !== null) {
+		const matchedText = m[1];
+		const absoluteStart = chunkBaseOffset + m.index;
+		const absoluteEnd = absoluteStart + matchedText.length;
+		const canonicalTitle = lookup.get(matchedText.toLowerCase()) ?? matchedText;
+		results.push({
+			start: absoluteStart,
+			end: absoluteEnd,
+			matchedText,
+			canonicalTitle,
+			contextBefore: fullContent.slice(Math.max(0, absoluteStart - 40), absoluteStart),
+			contextAfter: fullContent.slice(absoluteEnd, Math.min(fullContent.length, absoluteEnd + 40)),
+		});
+	}
+}
+
+/**
+ * Finds all matches of any TermEntry in the scannable spans of content.
+ * Uses a single alternation regex (longest terms first) for performance.
+ * Large scannable spans are chunked at newline boundaries.
+ */
+export function findMatches(content: string, terms: TermEntry[]): MatchResult[] {
+	if (terms.length === 0) return [];
+
+	// Build lookup: lowercase term → canonical title
+	const lookup = new Map<string, string>();
+	for (const entry of terms) {
+		lookup.set(entry.term.toLowerCase(), entry.canonicalTitle);
+	}
+
+	// Sort longest first so the alternation prefers longer titles
+	const sorted = [...terms].sort((a, b) => b.term.length - a.term.length);
+	const pattern = sorted.map((e) => escapeRegex(e.term)).join("|");
+	const re = new RegExp(`(?<![\\p{L}\\p{N}_])(${pattern})(?![\\p{L}\\p{N}_])`, "giu");
 
 	const spans = splitIntoSpans(content);
 	const results: MatchResult[] = [];
 
-	// Build a combined pattern that tries longest term first
-	const pattern = validTerms.map(escapeRegex).join("|");
-	// Unicode-aware word boundaries using lookarounds
-	const re = new RegExp(
-		`(?<![\\p{L}\\p{N}_])(${pattern})(?![\\p{L}\\p{N}_])`,
-		"giu"
-	);
-
 	for (const span of spans) {
 		if (!span.scannable) continue;
+		const spanText = content.slice(span.start, span.end);
 
-		const chunk = content.slice(span.start, span.end);
-		re.lastIndex = 0;
-
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(chunk)) !== null) {
-			const matchedText = m[1];
-			const absoluteStart = span.start + m.index;
-			const absoluteEnd = absoluteStart + m[0].length;
-
-			// Determine which term matched (for canonical replacement)
-			const matchedTerm = validTerms.find(
-				(t) => t.toLowerCase() === matchedText.toLowerCase()
-			) ?? matchedText;
-
-			const ctxStart = Math.max(0, absoluteStart - 40);
-			const ctxEnd = Math.min(content.length, absoluteEnd + 40);
-			const contextBefore = content.slice(ctxStart, absoluteStart);
-			const contextAfter = content.slice(absoluteEnd, ctxEnd);
-
-			results.push({
-				start: absoluteStart,
-				end: absoluteEnd,
-				matchedText,
-				term: matchedTerm,
-				contextBefore,
-				contextAfter,
-			});
+		if (spanText.length > LARGE_SPAN_THRESHOLD) {
+			// Chunk at newline boundaries so no title match crosses a chunk boundary
+			let pos = 0;
+			while (pos < spanText.length) {
+				let end = Math.min(pos + LARGE_SPAN_THRESHOLD, spanText.length);
+				if (end < spanText.length) {
+					const nl = spanText.lastIndexOf("\n", end);
+					if (nl > pos) end = nl + 1;
+				}
+				collectMatches(spanText.slice(pos, end), span.start + pos, re, lookup, content, results);
+				pos = end;
+			}
+		} else {
+			collectMatches(spanText, span.start, re, lookup, content, results);
 		}
 	}
 
-	// Sort by position ascending
 	results.sort((a, b) => a.start - b.start);
-
 	return results;
 }
 
 /**
- * Applies replacements to content, replacing matches with wikilinks.
- * If matched text equals canonical title (case-insensitively), uses [[Title]].
- * Otherwise uses [[Title|matched text]] to preserve prose form.
- * Processes matches in reverse order to preserve offsets.
+ * Replaces each match in content with its wikilink form.
+ * Uses [[Title]] when matched text equals the canonical title exactly,
+ * [[Title|matched]] otherwise (preserves case and alias prose form).
+ * Applies in reverse position order so earlier offsets stay valid.
  */
-export function applyReplacements(
-	content: string,
-	matches: MatchResult[],
-	canonicalTitle: string
-): string {
-	// Work from end to start so offsets stay valid
+export function applyReplacements(content: string, matches: MatchResult[]): string {
 	const sorted = [...matches].sort((a, b) => b.start - a.start);
-
 	let result = content;
 	for (const match of sorted) {
-		const before = result.slice(0, match.start);
-		const after = result.slice(match.end);
-		const useAlias = match.matchedText !== canonicalTitle;
+		const useAlias = match.matchedText !== match.canonicalTitle;
 		const link = useAlias
-			? `[[${canonicalTitle}|${match.matchedText}]]`
-			: `[[${canonicalTitle}]]`;
-		result = before + link + after;
+			? `[[${match.canonicalTitle}|${match.matchedText}]]`
+			: `[[${match.canonicalTitle}]]`;
+		result = result.slice(0, match.start) + link + result.slice(match.end);
 	}
-
 	return result;
 }
