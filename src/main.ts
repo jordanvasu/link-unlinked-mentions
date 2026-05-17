@@ -196,6 +196,6 @@ export default class LinkUnlinkedMentionsPlugin extends Plugin {
 			new Notice(
 				`Linked ${actualCount} mention${actualCount !== 1 ? "s" : ""} in "${activeFile.basename}".`
 			);
-		});
+		}).open();
 	}
 }
