@@ -5,7 +5,6 @@ import {
 	findMatches,
 	applyReplacements,
 	MatchResult,
-	TermEntry,
 } from "./matcher";
 
 function buildReport(
@@ -51,9 +50,9 @@ function buildReport(
 class ConfirmModal extends Modal {
 	private report: string;
 	private matchCount: number;
-	private onConfirm: () => void;
+	private onConfirm: () => Promise<void>;
 
-	constructor(app: App, report: string, matchCount: number, onConfirm: () => void) {
+	constructor(app: App, report: string, matchCount: number, onConfirm: () => Promise<void>) {
 		super(app);
 		this.report = report;
 		this.matchCount = matchCount;
@@ -100,7 +99,10 @@ class ConfirmModal extends Modal {
 		confirmBtn.addClass("mod-cta");
 		confirmBtn.addEventListener("click", () => {
 			this.close();
-			this.onConfirm();
+			this.onConfirm().catch((err: unknown) => {
+				new Notice(`Link Unlinked Mentions error: ${err instanceof Error ? err.message : String(err)}`);
+				console.error("[link-unlinked-mentions]", err);
+			});
 		});
 	}
 
@@ -112,14 +114,20 @@ class ConfirmModal extends Modal {
 export default class LinkUnlinkedMentionsPlugin extends Plugin {
 	async onload(): Promise<void> {
 		this.addRibbonIcon("link", "Link mentions of other notes in current note", () => {
-			this.linkMentionsInCurrentNote();
+			this.linkMentionsInCurrentNote().catch((err) => {
+				new Notice(`Link Unlinked Mentions error: ${err instanceof Error ? err.message : String(err)}`);
+				console.error("[link-unlinked-mentions]", err);
+			});
 		});
 
 		this.addCommand({
 			id: "link-mentions-of-other-notes",
 			name: "Link mentions of other notes in current note",
 			callback: () => {
-				this.linkMentionsInCurrentNote();
+				this.linkMentionsInCurrentNote().catch((err) => {
+					new Notice(`Link Unlinked Mentions error: ${err instanceof Error ? err.message : String(err)}`);
+					console.error("[link-unlinked-mentions]", err);
+				});
 			},
 		});
 	}
