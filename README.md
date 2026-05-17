@@ -54,6 +54,11 @@ npm test
 The production build outputs `main.js` in the project root.
 
 ---
+## Install in Obsidian
+
+https://community.obsidian.md/plugins/link-unlinked-mentions
+
+---
 
 ## Manual Installation
 
