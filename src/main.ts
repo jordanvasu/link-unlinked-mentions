@@ -162,15 +162,23 @@ export default class LinkUnlinkedMentionsPlugin extends Plugin {
 
 		const { terms, ambiguous } = buildTermEntries(sources, excludeTerms);
 
+		console.log(
+			`[link-unlinked-mentions] sources=${sources.length} terms=${terms.length} ambiguous=${ambiguous.length}`
+		);
+
 		const content = await this.app.vault.cachedRead(activeFile);
 		const matches = findMatches(content, terms);
 
+		console.log(`[link-unlinked-mentions] matches=${matches.length}`);
+
 		if (matches.length === 0) {
-			const msg =
-				ambiguous.length > 0
-					? `No unlinked mentions found. ${ambiguous.length} term${ambiguous.length !== 1 ? "s" : ""} skipped due to ambiguity.`
-					: "No unlinked mentions found in the current note.";
-			new Notice(msg);
+			new Notice(
+				`Link Unlinked Mentions: 0 matches found.\n` +
+				`Scanned ${sources.length} notes → ${terms.length} terms` +
+				(ambiguous.length > 0 ? `, ${ambiguous.length} ambiguous (skipped)` : "") +
+				".",
+				6000
+			);
 			return;
 		}
 
