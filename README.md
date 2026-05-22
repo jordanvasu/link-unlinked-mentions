@@ -1,128 +1,74 @@
 # Link Unlinked Mentions — Obsidian Plugin
 
-Scans the **active note** for plain-text mentions of other notes' titles and aliases, then converts them to wikilinks in one click.
+Turns plain-text mentions of other notes in your current note into `[[wikilinks]]` — all at once, with a preview before anything changes.
 
-> **Warning:** This operation modifies the active note in-place. It is **irreversible without a vault backup**. Back up your vault before using this plugin.
+> **Warning:** This plugin edits your active note directly. Once applied, changes are not reversible without a vault backup. Back up your vault before first use.
 
 ---
 
 ## What it does
 
-When invoked on a note, the plugin:
+When you write a note and mention another note by name without linking it, Obsidian calls that an "unlinked mention." Linking each one by hand is tedious. This plugin links them all in one pass.
 
-1. Enumerates every other markdown file in the vault and collects their basenames and `aliases` from frontmatter.
-2. Scans the active note for whole-word, case-insensitive matches of those terms — skipping code blocks, inline code, math, existing wikilinks, markdown links, HTML comments, tags, and YAML frontmatter.
-3. Shows a dry-run preview in a modal (with surrounding context for each match) and lists any terms that were skipped because they matched multiple notes ambiguously.
-4. On confirmation, rewrites matching text as `[[Target Note]]` (exact case) or `[[Target Note|matched text]]` (alias or differing case).
+When you run the command on a note, it:
 
----
+1. Looks at every other note in your vault and collects their titles and aliases.
+2. Scans your current note for any place where those titles or aliases appear in plain text.
+3. Shows you a preview of every match it found, with surrounding context.
+4. Waits for you to confirm before changing anything.
+5. Converts the confirmed matches into wikilinks pointing to the right notes.
 
-## Features
-
-- **Inverted scope** — operates on the active note, not the vault. Use it to clean up a specific note.
-- **Ambiguity detection** — if two notes share the same term, that term is skipped and reported, not guessed.
-- **Longest-match preference** — `Internal Validity` beats `Validity` at the same position.
-- **Alias support** — reads all three frontmatter forms (bare string, block array, flow array).
-- **Performance** — single combined alternation regex; large spans are chunked at newline boundaries.
-- **Unicode-aware** — word boundaries use `\p{L}` lookarounds, not `\b`, so `Café` and similar terms match correctly.
+The plugin only edits the note you're currently viewing. It does not modify other notes in your vault.
 
 ---
 
-## Build
+## What it ignores
 
-### Prerequisites
+Not every appearance of a word should become a link. The plugin leaves text alone inside:
 
-- [Node.js](https://nodejs.org/) 18+
-- npm
+| Region | Example |
+|---|---|
+| The note's frontmatter | The `---` block at the top |
+| Code blocks | Triple-backtick or `~~~` blocks |
+| Inline code | Text in single backticks |
+| Math | `$ ... $` and `$$ ... $$` |
+| Existing wikilinks | `[[Note]]` or `[[Note\|alias]]` |
+| Markdown links | `[text](url)` |
+| HTML comments | `<!-- ... -->` |
+| Tags | `#tag` |
 
-### Commands
-
-```bash
-# Install dependencies
-npm install
-
-# Development build (watch mode)
-npm run dev
-
-# Production build
-npm run build
-
-# Run tests
-npm test
-```
-
-The production build outputs `main.js` in the project root.
+If two different notes share the same title or alias, the plugin has no way to know which one you meant. Rather than guess, it skips that term and tells you in the preview which terms were skipped and why.
 
 ---
-## Install in Obsidian
 
+## Install
+
+The easiest way:
+
+1. Open Obsidian → Settings → Community plugins.
+2. Click Browse and search for **Link Unlinked Mentions**.
+3. Install, then enable.
+
+Or visit the community plugins page directly:
 https://community.obsidian.md/plugins/link-unlinked-mentions
 
 ---
 
-## Manual Installation
+## How to use it
 
-1. Run `npm run build` to produce `main.js`.
-2. In your vault, create the folder:
-   ```
-   <vault>/.obsidian/plugins/link-unlinked-mentions/
-   ```
-3. Copy these three files into that folder:
-   - `main.js`
-   - `manifest.json`
-   - `styles.css`
-4. Open Obsidian → Settings → Community plugins → Enable **Link Unlinked Mentions**.
+1. Open the note you want to add links to.
+2. Either:
+   - Open the command palette (`Ctrl+P` on Windows, `Cmd+P` on Mac) and run **Link mentions of other notes in current note**, or
+   - Click the link icon in the left ribbon.
+3. A preview window opens. It lists every match found, with the surrounding text so you can see context, and a separate section for any terms that were skipped because of ambiguity.
+4. Click **Link N mentions** to apply the changes, or **Cancel** to back out without changing anything.
+
+A notification confirms how many mentions were linked.
 
 ---
 
-## Usage
+## Aliases
 
-1. Open the note you want to enrich with links.
-2. Open the command palette (`Ctrl/Cmd + P`) and run **"Link mentions of other notes in current note"**, or click the link icon in the left ribbon.
-3. Review the dry-run preview — matches are listed with context; ambiguous terms appear in a separate section.
-4. Click **"Link N mentions"** to apply, or **Cancel** to abort.
-
-A notice confirms how many mentions were linked.
-
----
-
-## Skip zones
-
-The following regions in the active note are never modified:
-
-| Zone | Example |
-|---|---|
-| YAML frontmatter | `--- … ---` at file start |
-| Fenced code blocks | ` ``` … ``` ` and `~~~ … ~~~` |
-| Inline code | `` `code` `` |
-| Math blocks | `$$ … $$` |
-| Inline math | `$ … $` |
-| Existing wikilinks | `[[Note]]`, `[[Note\|alias]]` |
-| Markdown links | `[text](url)` |
-| HTML comments | `<!-- … -->` |
-| Tags | `#tag` |
-
----
-
-## Alias support
-
-Aliases are read from frontmatter via Obsidian's metadata cache. All three forms are recognised:
+If a note has aliases defined in its frontmatter, the plugin recognizes those as well as the title. All three frontmatter formats work:
 
 ```yaml
-# Bare string
-aliases: My Alias
-
-# Block array
-aliases:
-  - My Alias
-  - Another Alias
-
-# Flow array
-aliases: [My Alias, Another Alias]
-```
-
----
-
-## Development
-
-Tests live in `src/matcher.test.ts` and use [Vitest](https://vitest.dev/). The `src/matcher.ts` module has no Obsidian imports and runs entirely in Node.js.
